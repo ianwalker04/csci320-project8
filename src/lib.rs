@@ -390,20 +390,6 @@ impl<const HEAP_SIZE: usize, const MAX_BLOCKS: usize, const MAX_COPIES: usize>
     fn collect_gen_0<T: Tracer>(&mut self, tracer: &T) -> anyhow::Result<(), HeapError> {
         let (active_0, inactive_0, active_1, inactive_1, block_info) =
             self.active_inactive_gen_0_gen_1();
-        // Outline
-        //
-        // 1. Call the tracer to find out what blocks are in use.
-        // 2. For each block in use:
-        //    * If it has been copied MAX_COPIES times
-        //      * You'll need a variable to track whether you have already performed a generation 1 collection.
-        //      * If so, just return the error - multiple generation 1 collections will not be productive
-        //      * If not, copy into the active generation 1 heap.
-        //      * If that heap is out of space, perform a generation 1 collection by calling self.collect_gen_1().
-        //      * After the generation 1 collection, try copying it into the inactive generation 1 heap.
-        //    * If not, copy it into the inactive generation 0 heap.
-        // 3. Clear the active generation 0 heap.
-        // 4. Update self.active_gen_0 to the other heap.
-        // 5. If there was a generation 1 collection, update self.active_gen_1 to the other heap.
         let mut gen_1_collection: bool = false;
         let mut blocks_used: [bool; MAX_BLOCKS] = [false; MAX_BLOCKS];
         tracer.trace(&mut blocks_used);
@@ -417,20 +403,24 @@ impl<const HEAP_SIZE: usize, const MAX_BLOCKS: usize, const MAX_COPIES: usize>
                 if let Some(used_block_info) = block_info[block_num] {
                     if used_block_info.num_times_copied == MAX_COPIES {
                         if gen_1_collection {
-                            return Err(HeapError::OutOfBlocks);
-                        }
-                        match active_0.copy(&used_block_info, active_1) {
-                            Ok(new_block_info) => block_info[block_num] = Some(new_block_info),
-                            Err(_) => {
-                                gen_1_collection = true;
-                                Self::collect_gen_1(&blocks_used, block_info, active_1, inactive_1)?;
-                                match active_0.copy(&used_block_info, inactive_1) {
-                                    Ok(new_block_info) => block_info[block_num] = Some(new_block_info),
-                                    Err(e) => return Err(e)
+                            match active_0.copy(&used_block_info, inactive_1) {
+                                Ok(new_block_info) => block_info[block_num] = Some(new_block_info),
+                                Err(e) => return Err(e)
+                            }
+                        } else {
+                            match active_0.copy(&used_block_info, active_1) {
+                                Ok(new_block_info) => block_info[block_num] = Some(new_block_info),
+                                Err(_) => {
+                                    gen_1_collection = true;
+                                    Self::collect_gen_1(&blocks_used, block_info, active_1, inactive_1)?;
+                                    match active_0.copy(&used_block_info, inactive_1) {
+                                        Ok(new_block_info) => block_info[block_num] = Some(new_block_info),
+                                        Err(e) => return Err(e)
+                                    }
                                 }
                             }
                         }
-                    } else {
+                    } else if used_block_info.num_times_copied < MAX_COPIES {
                         let new_block_info: BlockInfo = active_0.copy(&used_block_info, inactive_0)?;
                         block_info[block_num] = Some(new_block_info);
                     }
@@ -451,12 +441,6 @@ impl<const HEAP_SIZE: usize, const MAX_BLOCKS: usize, const MAX_COPIES: usize>
         src: &mut RamHeap<HEAP_SIZE>,
         dest: &mut RamHeap<HEAP_SIZE>,
     ) -> anyhow::Result<(), HeapError> {
-        // todo!("Complete implementation.");
-        // Outline
-        //
-        // 1. For each block in use:
-        //    * If it has been copied more than MAX_COPIES times, copy it to `dest`
-        // 2. Clear the `src` heap.
         for (block_num, &used) in blocks_used.iter().enumerate() {
             if used {
                 if let Some(used_block_info) = block_info[block_num] {
@@ -528,16 +512,6 @@ impl<const HEAP_SIZE: usize, const MAX_BLOCKS: usize, const MAX_COPIES: usize> G
         num_words: usize,
         tracer: &T,
     ) -> anyhow::Result<Pointer, HeapError> {
-        // Outline
-        //
-        // 1. Find an available block number
-        //    * If none are available, perform a collection by calling self.collect_gen_0().
-        //    * If none are still available, report out of blocks.
-        // 2. Perform a generation zero malloc.
-        //    * If no space is available, perform a collection by calling self.collect_gen_0().
-        //    * If no space is still available, report out of memory.
-        // 3. Create entry in the block table for the newly allocated block.
-        // 4. Return a pointer to the newly allocated block.
         if num_words == 0 {
             return Err(HeapError::ZeroSizeRequest);
         }
